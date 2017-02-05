@@ -45,7 +45,7 @@ type Listener interface {
 	Accept(local *Local, remote *Remote, receiver Receiver) (association *Association, err error)
 }
 
-type PostImpl interface {
+type PostProtocol interface {
 	Associate(local *Local, remote *Remote, receiver Receiver) (association *Association, err error)
 	Listen(local *Local, achandler AcceptHandler) (listener *Listener, err error)
 }
