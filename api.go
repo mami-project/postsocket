@@ -1,8 +1,8 @@
 package postsocket
 
 import (
-	"io"
 	"crypto/tls"
+	"io"
 	"time"
 )
 
@@ -22,16 +22,16 @@ type ProtocolStackInstance interface {
 
 	// Read the next message into the given channel, or cancel when an object
 	// is written to the cancellation channel
-	Read(t Transient, mc chan-> Message, cancel chan<- struct{}) error
+	Read(t Transient, mc <-chan Message, cancel chan<- struct{}) error
 
 	// Ensure that the PSI is ready for reading and writing
-	Start(t Transient, func() ready) error
+	Start(t Transient, ready func()) error
 
 	// Destroy this PSI
 	Destroy(t Transient)
 }
 
-// Binds a stream to a protocol stack instance. 
+// Binds a stream to a protocol stack instance.
 type Transient interface {
 	Path() PathDescriptor
 }
@@ -49,14 +49,14 @@ type Transient interface {
 type PolicyContext map[string]interface{}
 
 // A path descriptor describes a single path through
-// the network, including all addressing and 
-// protocol stack instance information necessary to 
+// the network, including all addressing and
+// protocol stack instance information necessary to
 // establish an association on that path
 type PathDescriptor interface {
 	Identifier() string
 	PolicyContext() PolicyContext
 	LocalIdentity() LocalIdentity
-	RemoteIdentity() RemoteIdentity	
+	RemoteIdentity() RemoteIdentity
 }
 
 // Given a policy describing which PvDs are acceptable,
@@ -66,103 +66,207 @@ type PathDescriptor interface {
 func CandidatePaths(pc PolicyContext, ri RemoteIdentity) []PathDescriptor
 
 // Allocate an association given a policy between a local and a remote
-func NewAssociation(pc PolicyContext, 
-					li LocalIdentity, 
-					ri RemoteIdentity) Association, error
-
+func NewAssociation(pc PolicyContext,
+	li LocalIdentity,
+	ri RemoteIdentity) (Association, error)
 
 ///////////////////////////////////////////////////////////
 // PostSockets API
 ///////////////////////////////////////////////////////////
 
+// The interface to path information is TBD
+type Path interface{}
+
+// An association encapsulates an endpoint pair and the set of paths between them.
 type Association interface {
-	PolicyContext() PolicyContext
-	LocalIdentity() LocalIdentity
-	RemoteIdentity() RemoteIdentity
-
-	NewStream() Stream, error
+	Local() Local
+	Remote() Remote
+	Paths() []Path
 }
 
-// Contains a message along with metadata needed to send it
+// A message together with with metadata needed to send it
 type OutMessage struct {
-	Content Message
+	// The content of this message, as a byte array
+	Content []byte
+	// The niceness of this message. 0 is highest priority.
 	Niceness uint
+	// The lifetime of this message. After this duration, the message may expire.
 	Lifetime time.Duration
+	// Pointers to messages that must be sent before this one.
 	Antecedent []*OutMessage
-	Metadata map[string]interface{}
+	// True if the message is safe to send such that it may be received multiple times (i.e. for 0-RTT).
+	Idempotent bool
 }
 
-// FIXME does a in message have metadata? yes, PSI can fill this in...
+// A message received from a stream
+type InMessage []byte
 
-// Contains a message received from a stream
-type Message []byte
+// A Carrier is a transport protocol stack-independent interface for sending and
+// receiving messages between an application and a remote endpoint; it is roughly
+// analogous to a socket in the present sockets API.
+type Carrier interface {
+	// Send a byte array on this Carrier as a message with default metadata
+	// and no notifications.
+	Send(buf []byte) error
 
-// A logical, two-way channel for messages
-type Stream interface {
-	// Retrieve the Association over which this stream is running
+	// Send a message on this Carrier. The optional onSent function will be
+	// called when the protocol stack instance has sent the message. The
+	// optional onAcked function will be called when the receiver has
+	// acknowledged the message. The optional onExpired function will be
+	// called if the message's lifetime expired before the message coult be
+	// sent. If the Carrier is not active, attempt to activate the Carrier
+	// before sending.
+	Sendmsg(msg *OutMessage, onSent func(), onAcked func(), onExpired func()) error
+
+	// Signal that an application is ready to receive messages via a given callback.
+	// Messages will be given to the callback until it returns false, or until the
+	// Carrier is closed.
+	Ready(receive func(InMessage) bool) error
+
+	// Retrieve the Association over which this Carrier is running.
 	Association() *Association
 
-	// Send a message on this Stream
-	Send(msg *OutMessage, fate func(err error))
+	// Retrieve the active Transients over which this carrier is running, if active.
+	Transients() []Transient
 
-	// Signal that the application is ready 
-	// to receive a message on this stream to a given channel
-	Receive(mc chan-> Message, cancel chan<- struct{})
+	// Determine whether the Carrier is currently active
+	IsActive() bool
 
-	// Terminate the stream
+	// Ensure that the Carrier is active and ready to send and receive messages.
+	// Attempts to bring up at least one Transient.
+	Activate() error
+
+	// Terminate the Carrier
+	Close()
+
+	// Mutate to a file-like object
+	AsStream() io.ReadWriteCloser
+
+	// Attempt to fork a new Carrier for communicating with the same Remote
+	Fork() (Carrier, error)
+
+	// Signal that an application is ready to accept forks via a given callback.
+	// Forked carriers will be given to the callback until it returns false or
+	// until the Carrier is closed.
+	Accept(accept func(Carrier) bool) error
+}
+
+// Initiate a Carrier from a given Local to a given Remote. Returns a new
+// Carrier, which may be bound to an existing or a new Association. The
+// initiated Carrier is not yet active.
+func Initiate(local Local, remote Remote) (Carrier, error)
+
+type Listener interface {
+	// Signal that an application is ready to accept forks via a given callback.
+	// Accept will terminate when the callback returns false, or until the
+	// Listener is closed.
+	Accept(accept func(Carrier) bool) error
+
+	// Terminate this Listener
 	Close()
 }
 
-type Receiver interface {
-	Receive(msg Message)
-	Close()
-}
+// Create a Listener on a given Local which will pass new Carriers to the
+// given channel until that channel is closed.
+func Listen(local Local) (Listener, error)
 
-type Accept func(stream *Stream)
-
-type Respond func(msg Message, reply Reply)
-
-type Reply func(msg *OutMessage, fate func(err error))
-
+// A Source is a unidirectional, send-only Carrier.
 type Source interface {
-	// Send a message via this Source
-	Send(msg *OutMessage, fate func(err error))
+	// Send a byte array on this Source as a message with default metadata
+	// and no notifications.
+	Send(buf []byte) error
 
+	// Send a message on this Source. The optional onSent function will be
+	// called when the protocol stack instance has sent the message. The
+	// optional onAcked function will be called when the receiver has
+	// acknowledged the message. The optional onExpired function will be
+	// called if the message's lifetime expired before the message coult be
+	// sent. If the Source is not active, attempt to activate the Source
+	// before sending.
+	Sendmsg(msg *OutMessage, onSent func(), onAcked func(), onExpired func()) error
+
+	// Retrieve the Association over which this Source is running.
+	Association() *Association
+
+	// Determine whether the Source is currently active
+	IsActive() bool
+
+	// Ensure that the Source is active and ready to send messages.
+	// Attempts to bring up at least one Transient.
+	Activate() error
+
+	// Terminate the Source
 	Close()
 }
 
-type PostTerminal interface {
-	PolicyContext() PolicyContext
+// Initiate a Source from a given Local to a given Remote. Returns a new
+// Source, which may be bound to an existing or a new Association. The
+// initiated Source is not yet active.
+func NewSource(local Local, remote Remote) (Source, error)
 
-	NewStream(li LocalIdentity, ri RemoteIdentity, pc PolicyContext) Stream, error
-	NewListener(li LocalIdentity, pc PolicyContext, accept Accept) io.Closer, error
-	NewResponder(li LocalIdentity, pc PolicyContext, respond Respond) io.Closer, error
-	NewSource(li LocalIdentity, ri RemoteIdentity, pc PolicyContext) Source, error
-	NewSink(li LocalIdentity, pc PolicyContext, receiver Receiver) io.Closer, error
+// A Sink is a unidirectional, receive-only Carrier, bound only to a local.
+type Sink interface {
+	// Signal that an application is ready to receive messages via a given callback.
+	// Messages will be given to the callback until it returns false, or until the
+	// Sink is closed.
+	Ready(receive func(InMessage) bool) error
+
+	// Retrieve the Association over which this Sink is running.
+	Association() *Association
+
+	// Terminate the Sink
+	Close()
 }
 
-// Create a new PostSockets terminal. Terminals encapsulate 
-// default policy contexts, and cache Associations for reuse.
+// Initiate a Sink on a given Local. Returns a new
+// Sink, which may be bound to an existing or a new Association.
+func NewSink(local Local) (Sink, error)
 
-func NewTerminal(pc PolicyContext) PostTerminal
+// Initiate a Responder on a given Local. For each incoming Message, calls the
+// respond function with the Message and a Sink to send replies to. Calls the
+// Responder until it returns False, then terminates
+func Respond(local Local, respond func(msg InMessage, reply Sink) bool) error
 
-// Encapsulate a local identity
-type LocalIdentity struct {
-	Port int 
+// A local identity
+type Local struct {
+	// A string identifying an interface or set of interfaces to accept messages and new carriers on.
 	Interface string
-	EndEntities []tls.Certificate
+	// A transport layer port
+	Port int
+	// A set of zero or more end entity certificates, together with private
+	// keys, to identify this application with.
+	Certificates []tls.Certificate
 }
 
-// Encapsulate a remote identity
-type RemoteIdentity interface {
-	AcceptableIssuers() []tls.Certificate
-	AcceptableEndEntities() []tls.Certificate
-	Resolve() []RemoteIdentity, error
+// Encapsulate a remote identity. Since the contents of a Remote are highly
+// dependent on its level of resolution; some examples are below.
+type Remote interface {
+	// Resolve this Remote Identity to a
+	Resolve() ([]RemoteIdentity, error)
+	// Returns True if the Remote is completely resolved; i.e., cannot be resol
+	Complete() bool
 }
 
+// Remote consisting of a URL
+type URLRemote struct {
+	URL string
+}
 
+// Remote encapsulating a name and port number
+type NamedEndpointRemote struct {
+	Hostname string
+	Port     int
+}
 
+// Remote encapsulating an IP address and port number
+type IPEndpointRemote struct {
+	Address net.IP
+	Port    int
+}
 
-
-
-
+// Remote encapsulating an IP address and port number, and a set of presented certificates
+type IPEndpointCertRemote struct {
+	Address      net.IP
+	Port         int
+	Certificates []tls.Certificate
+}
