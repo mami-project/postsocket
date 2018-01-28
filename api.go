@@ -3,270 +3,161 @@ package postsocket
 import (
 	"crypto/tls"
 	"io"
-	"time"
 )
 
 ///////////////////////////////////////////////////////////
-// Protocol Stack Instantiation MPI
+// Post Sockets API definition
 ///////////////////////////////////////////////////////////
 
-// Encapsulates a connectable or connected instance of a protocol stack (e.g.
-// TCP/IP, Websockets over TLS over TCP over IP, QUIC over PLUS over UDP over
-// IP, and so on).
-type ProtocolStackInstance interface {
-	// Get a name for this instance for debugging purposes
-	String()
+// PostContext encapsulates all the state kept by the Post Sockets API at a
+// single endpoint, and is the "root" of the API. It contains Policies and
+// Configurations governing connection initiation and listening, available
+// Locals, stored Associations and Paths, and currently open Carriers and
+// Transients. An application will generally create a single PostContext
+// instance on startup, optionally Load() state from disk, and can checkpoint
+// in-memory state to disk with Save().
+type PostContext interface {
+	// Initiate a connection from a given Local to a given Remote, with an
+	// optional Configuration to override association- and context-level
+	// Conifigurations, returning a Carrier on which messages can be sent and
+	// received.
+	Initiate(loc Local, rem Remote, cfg Configuration) (Carrier, error)
 
-	// Write a Message to this Instance
-	Write(t Transient, msg Message) error
+	// Listen for connections on a given Local which will pass connection
+	// requests to a given ListenFunc.
+	Listen(loc Local, lfn ListenFunc, cfg Configuration) (Listener, error)
 
-	// Read the next message into the given channel, or cancel when an object
-	// is written to the cancellation channel
-	Read(t Transient, mc <-chan Message, cancel chan<- struct{}) error
+	// Create a new Source associated with a given Local and Remote
+	NewSource(loc Local, rem Remote, cfg Configuration) (Carrier, error)
 
-	// Ensure that the PSI is ready for reading and writing
-	Start(t Transient, ready func()) error
+	// Create a new Sink associated with a given Local
+	NewSink(loc Local, cfg Configuration) (Carrier, error)
 
-	// Destroy this PSI
-	Destroy(t Transient)
+	// Save this context's state to a file on disk.
+	Save(filename string) error
+
+	// Replace this context's state with state loaded from a file on disk.
+	Load(filename string) error
+
+	// Bind a configuration to this context
+	Configure(cfg Configuration) error
+
+	// Retrieve the configuration in effect for this context.
+	Configuration() Configuration
+
+	// Iterate over currently active provisioning domains.
+	ProvisioningDomains() []ProvisioningDomain
+
+	// Create a new Local, optionally bound to a provisioning domain,
+	// optionally identified by zero or more TLS certificates, optionally
+	// identified by one or more transport-layer ports
+	NewLocal(pvd ProvisioningDomain, identities []tls.Certificate, ports []uint16) (Local, error)
+
+	// Create a new Remote from a string specification. The Remote will be
+	// optionally scoped for use with a given Local during resolution, and
+	// optionally subject to a given identity check on any identity presented.
+	NewRemote(spec string, loc Local, identityCheck IdentityCheckFn)
 }
 
-// Binds a stream to a protocol stack instance.
-type Transient interface {
-	Path() PathDescriptor
-}
-
-///////////////////////////////////////////////////////////
-// Pathfinder lower-level API -- probably not exposed
-///////////////////////////////////////////////////////////
-
-// A policy context describes a set
-// of properties for "desirable" provisioning
-// domains, protocol stack instances, etc.
-// for a particular association.
-
-// FIXME neat this up a bit.
-type PolicyContext map[string]interface{}
-
-// A path descriptor describes a single path through
-// the network, including all addressing and
-// protocol stack instance information necessary to
-// establish an association on that path
-type PathDescriptor interface {
-	Identifier() string
-	PolicyContext() PolicyContext
-	LocalIdentity() LocalIdentity
-	RemoteIdentity() RemoteIdentity
-}
-
-// Given a policy describing which PvDs are acceptable,
-// and a remote identity to connect to / rendezvous with,
-// resolve the remote and determine possible
-// Paths to between acceptable PvDs and the remote.
-func CandidatePaths(pc PolicyContext, ri RemoteIdentity) []PathDescriptor
-
-// Allocate an association given a policy between a local and a remote
-func NewAssociation(pc PolicyContext,
-	li LocalIdentity,
-	ri RemoteIdentity) (Association, error)
-
-///////////////////////////////////////////////////////////
-// PostSockets API
-///////////////////////////////////////////////////////////
-
-// The interface to path information is TBD
-type Path interface{}
-
-// An association encapsulates an endpoint pair and the set of paths between them.
+// Association encapsulates state about communications between a local
+// endpoint and a remote endpoint over a set of paths. It includes local and
+// remote identity information, cached cryptographic resumption parameters and
+// cached path properties.
 type Association interface {
-	Local() Local
-	Remote() Remote
+
+	// Iterate over the Carriers currently bound to this Association
+	Carriers() []Carrier
+
+	// Iterate over the Paths this carrier knows about
 	Paths() []Path
+
+	// Initiate a new Carrier on this Association
+	Initiate() (Carrier, error)
+
+	// Bind a configuration to this Association. Association-level
+	// configurations override context-level configurations where permitted by
+	// policy.
+	Configure(cfg Configuration) error
+
+	// Return the Configuration in effect for this Association. This
+	// configuration will include configuration directives inherited from the
+	// PostContext in which the association was created.
+	Configuration() Configuration
 }
 
-// A message together with with metadata needed to send it
-type OutMessage struct {
-	// The content of this message, as a byte array
-	Content []byte
-	// The niceness of this message. 0 is highest priority.
-	Niceness uint
-	// The lifetime of this message. After this duration, the message may expire.
-	Lifetime time.Duration
-	// Pointers to messages that must be sent before this one.
-	Antecedent []*OutMessage
-	// True if the message is safe to send such that it may be received multiple times (i.e. for 0-RTT).
-	Idempotent bool
-}
-
-// A message received from a stream
-type InMessage []byte
-
-// A Carrier is a transport protocol stack-independent interface for sending and
-// receiving messages between an application and a remote endpoint; it is roughly
-// analogous to a socket in the present sockets API.
+// Carrier provides an interface over which messages can be sent to and
+// received from a remote endpoint.
 type Carrier interface {
-	// Send a byte array on this Carrier as a message with default metadata
-	// and no notifications.
-	Send(buf []byte) error
+	// Access the association backing this Carrier
+	Association() Association
 
-	// Send a message on this Carrier. The optional onSent function will be
-	// called when the protocol stack instance has sent the message. The
-	// optional onAcked function will be called when the receiver has
-	// acknowledged the message. The optional onExpired function will be
-	// called if the message's lifetime expired before the message coult be
-	// sent. If the Carrier is not active, attempt to activate the Carrier
-	// before sending.
-	Sendmsg(msg *OutMessage, onSent func(), onAcked func(), onExpired func()) error
+	// Close this Carrier
+	Close() error
 
-	// Signal that an application is ready to receive messages via a given callback.
-	// Messages will be given to the callback until it returns false, or until the
-	// Carrier is closed.
-	Ready(receive func(InMessage) bool) error
+	// Register an event handler to be notified when this carrier closes
+	OnClosed(fn CloseEventFunc)
 
-	// Retrieve the Association over which this Carrier is running.
-	Association() *Association
+	// Send a Message on this carrier with given lifetime, niceness,
+	// idempodence, and immediacy
+	Send(msg []byte, lifetime int, nice int, idem bool, immed bool) error
 
-	// Retrieve the active Transients over which this carrier is running, if active.
-	Transients() []Transient
+	// Register an event handler to be notified when a message expires before
+	// being sent
+	OnExpired(fn SendEventFunc) error
 
-	// Determine whether the Carrier is currently active
-	IsActive() bool
+	// Register an event handler to be notified when a message is sent
+	OnSent(fn SendEventFunc) error
 
-	// Ensure that the Carrier is active and ready to send and receive messages.
-	// Attempts to bring up at least one Transient.
-	Activate() error
+	// Register an event handler to be notified when a message is acknowledged
+	OnAcked(fn SendEventFunc) error
 
-	// Terminate the Carrier
-	Close()
+	// Register a receiver that will be called when a message is received
+	Ready(fn ReceiveFunc) error
 
-	// Mutate to a file-like object
-	AsStream() io.ReadWriteCloser
+	// Register an event handler that will be called when a receive error occurs
+	OnError(fn ReceiveErrorFunc)
 
-	// Attempt to fork a new Carrier for communicating with the same Remote
-	Fork() (Carrier, error)
-
-	// Signal that an application is ready to accept forks via a given callback.
-	// Forked carriers will be given to the callback until it returns false or
-	// until the Carrier is closed.
-	Accept(accept func(Carrier) bool) error
+	// Register a deframer
+	DeframeWith(fn DeframeFunc)
 }
 
-// Initiate a Carrier from a given Local to a given Remote. Returns a new
-// Carrier, which may be bound to an existing or a new Association. The
-// initiated Carrier is not yet active.
-func Initiate(local Local, remote Remote) (Carrier, error)
-
-type Listener interface {
-	// Signal that an application is ready to accept forks via a given callback.
-	// Accept will terminate when the callback returns false, or until the
-	// Listener is closed.
-	Accept(accept func(Carrier) bool) error
-
-	// Terminate this Listener
-	Close()
+type ProvisioningDomain interface {
 }
 
-// Create a Listener on a given Local which will pass new Carriers to the
-// given channel until that channel is closed.
-func Listen(local Local) (Listener, error)
-
-// A Source is a unidirectional, send-only Carrier.
-type Source interface {
-	// Send a byte array on this Source as a message with default metadata
-	// and no notifications.
-	Send(buf []byte) error
-
-	// Send a message on this Source. The optional onSent function will be
-	// called when the protocol stack instance has sent the message. The
-	// optional onAcked function will be called when the receiver has
-	// acknowledged the message. The optional onExpired function will be
-	// called if the message's lifetime expired before the message coult be
-	// sent. If the Source is not active, attempt to activate the Source
-	// before sending.
-	Sendmsg(msg *OutMessage, onSent func(), onAcked func(), onExpired func()) error
-
-	// Retrieve the Association over which this Source is running.
-	Association() *Association
-
-	// Determine whether the Source is currently active
-	IsActive() bool
-
-	// Ensure that the Source is active and ready to send messages.
-	// Attempts to bring up at least one Transient.
-	Activate() error
-
-	// Terminate the Source
-	Close()
+type Local interface {
 }
 
-// Initiate a Source from a given Local to a given Remote. Returns a new
-// Source, which may be bound to an existing or a new Association. The
-// initiated Source is not yet active.
-func NewSource(local Local, remote Remote) (Source, error)
-
-// A Sink is a unidirectional, receive-only Carrier, bound only to a local.
-type Sink interface {
-	// Signal that an application is ready to receive messages via a given callback.
-	// Messages will be given to the callback until it returns false, or until the
-	// Sink is closed.
-	Ready(receive func(InMessage) bool) error
-
-	// Retrieve the Association over which this Sink is running.
-	Association() *Association
-
-	// Terminate the Sink
-	Close()
-}
-
-// Initiate a Sink on a given Local. Returns a new
-// Sink, which may be bound to an existing or a new Association.
-func NewSink(local Local) (Sink, error)
-
-// Initiate a Responder on a given Local. For each incoming Message, calls the
-// respond function with the Message and a Sink to send replies to. Calls the
-// Responder until it returns False, then terminates
-func Respond(local Local, respond func(msg InMessage, reply Sink) bool) error
-
-// A local identity
-type Local struct {
-	// A string identifying an interface or set of interfaces to accept messages and new carriers on.
-	Interface string
-	// A transport layer port
-	Port int
-	// A set of zero or more end entity certificates, together with private
-	// keys, to identify this application with.
-	Certificates []tls.Certificate
-}
-
-// Encapsulate a remote identity. Since the contents of a Remote are highly
-// dependent on its level of resolution; some examples are below.
 type Remote interface {
-	// Resolve this Remote Identity to a
-	Resolve() ([]RemoteIdentity, error)
-	// Returns True if the Remote is completely resolved; i.e., cannot be resol
+	Resolve(loc Local) ([]Remote, error)
 	Complete() bool
 }
 
-// Remote consisting of a URL
-type URLRemote struct {
-	URL string
+type Path interface {
 }
 
-// Remote encapsulating a name and port number
-type NamedEndpointRemote struct {
-	Hostname string
-	Port     int
+type Configuration interface {
 }
 
-// Remote encapsulating an IP address and port number
-type IPEndpointRemote struct {
-	Address net.IP
-	Port    int
+type Listener interface {
 }
 
-// Remote encapsulating an IP address and port number, and a set of presented certificates
-type IPEndpointCertRemote struct {
-	Address      net.IP
-	Port         int
-	Certificates []tls.Certificate
-}
+type ListenFunc func()
+
+// DeframeFunc is used to deframe a byte stream into discrete messages. When
+// Post Sockets is used with a transport protocol which does not support
+// message boundary preservation, this allows an application to push message
+// deframing down into the API implementation. DeframeFunc, when called,
+// should read a single application-layer message into a byte slice, and leave
+// the reader at the stream position of the start of the next message, if any.
+type DeframeFunc func(in io.Reader) ([]byte, error)
+
+type ReceiveFunc func(msg []byte, carrier Carrier)
+
+type ReceiveErrorFunc func(err error)
+
+// SendEventFunc is a callback type for events on a sent message.
+type SendEventFunc func(msg []byte, carrier Carrier)
+
+type CloseEventFunc func(carrier Carrier)
+
+type IdentityCheckFn func(certs []tls.Certificate) error
