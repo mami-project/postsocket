@@ -1,5 +1,5 @@
-// Postsocket specifies a Go interface for implementations of the transport
-// service abstract interface described in
+// Package postsocket specifies a Go interface for the TAPS API. This abstract
+// interface to transport-layer service is described in
 // https://taps-api.github.io/drafts/draft-trammell-taps-interface.html. For
 // now, read that document to understand what's going on in this package.
 // Eventually, this package will grow to contain a demonstration
@@ -14,7 +14,6 @@
 // through the Error event. The error returns on calls are therefore only used
 // for immediately detectable errors, such as inconsistent arguments or
 // states.
-//
 package postsocket
 
 import (
