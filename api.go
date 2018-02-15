@@ -14,7 +14,7 @@
 // through the Error event. The error returns on calls are therefore only used
 // for immediately detectable errors, such as inconsistent arguments or
 // states.
-
+//
 package postsocket
 
 import (
