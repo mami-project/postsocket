@@ -178,23 +178,23 @@ type TransportParameters interface {
 	// no protocols and paths available fulfill this parameter, then no
 	// connection is possible. v is an optional value whose meaning is
 	// parameter-specific.
-	Require(p ParameterIdentifier, v int) TransportParameters
+	Require(p ParameterIdentifier, v interface{}) TransportParameters
 
 	// Prefer protocols and paths selected to fulfill this parameter.
 	// Preferences are considered after requirements and prohibitions. v is an
 	// optional value whose meaning is parameter-specific.
-	Prefer(p ParameterIdentifier, v int) TransportParameters
+	Prefer(p ParameterIdentifier, v interface{}) TransportParameters
 
 	// Avoid protocols and paths selected to fulfill this parameter.
 	// Avoidences are considered after requirements and prohibitions. v is an
 	// optional value whose meaning is parameter-specific.
-	Avoid(p ParameterIdentifier, v int) TransportParameters
+	Avoid(p ParameterIdentifier, v interface{}) TransportParameters
 
 	// Prohibit the selection of protocols and paths that fulfill this
 	// parameter. If the protocols and paths available all fulfill this
 	// parameter, then no connection is possible. v is an optional value
 	// whose meaning is parameter-specific.
-	Prohibit(p ParameterIdentifier, v int) TransportParameters
+	Prohibit(p ParameterIdentifier, v interface{}) TransportParameters
 }
 
 // SecurityParameters contains a set of parameters used in the establishment
@@ -223,23 +223,23 @@ type SecurityParameters interface {
 	// If no available security associations fulfill this parameter, then no
 	// connection is possible. v is an optional value whose meaning is
 	// parameter-specific.
-	Require(p ParameterIdentifier, v int) SecurityParameters
+	Require(p ParameterIdentifier, v interface{}) SecurityParameters
 
 	// Prefer to establish security associations that fulfill this parameter.
 	// Preferences are considered after requirements and prohibitions. v is an
 	// optional value whose meaning is parameter-specific.
-	Prefer(p ParameterIdentifier, v int) SecurityParameters
+	Prefer(p ParameterIdentifier, v interface{}) SecurityParameters
 
 	// Avoid the establishment of security associations that fulfill this parameter.
 	// Avoidences are considered after requirements and prohibitions. v is an
 	// optional value whose meaning is parameter-specific.
-	Avoid(p ParameterIdentifier, v int) SecurityParameters
+	Avoid(p ParameterIdentifier, v interface{}) SecurityParameters
 
 	// Prohibit the establishment of security associations that fulfill this
 	// parameter. If the security associations available all fulfill this
 	// parameter, then no connection is possible. v is an optional value
 	// whose meaning is parameter-specific.
-	Prohibit(p ParameterIdentifier, v int) SecurityParameters
+	Prohibit(p ParameterIdentifier, v interface{}) SecurityParameters
 }
 
 // SendParameters contains a set of parameters used for sending content.
@@ -336,7 +336,7 @@ type Connection interface {
 	GetEventHandler() EventHandler
 
 	// SetEventHandler replaces this connection's event handler.
-	SetEventHandler(eh EventHandler)
+	SetEventHandler(evh EventHandler)
 
 	// GetEventHandler returns this connection's framing handler.
 	GetFramingHandler() FramingHandler
