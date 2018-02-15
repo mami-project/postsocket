@@ -1,3 +1,20 @@
+// Postsocket specifies a Go interface for implementations of the transport
+// service abstract interface described in
+// https://taps-api.github.io/drafts/draft-trammell-taps-interface.html. For
+// now, read that document to understand what's going on in this package.
+// Eventually, this package will grow to contain a demonstration
+// implementation of the API.
+//
+// A Note on Error Handling
+//
+// This API provides two ways for its client to learn of errors: through the
+// Error event passed to a connection's EventHandler, and through error
+// returns on various calls. In general, errors in networking are
+// asynchronous, so almost every error involving the network will be passed
+// through the Error event. The error returns on calls are therefore only used
+// for immediately detectable errors, such as inconsistent arguments or
+// states.
+
 package postsocket
 
 import (
@@ -6,11 +23,6 @@ import (
 	"net"
 	"time"
 )
-
-///////////////////////////////////////////////////////////////////////////////
-// Post Sockets API
-// Transport Services (TAPS) Abstract Interface edition
-/////////////////////////////////////////////////////////////////////////////////
 
 // TransportContext encapsulates all the state kept by the API at a single
 // endpoint, and is the "root" of the API. It can be used to create new
@@ -43,41 +55,54 @@ type TransportContext interface {
 	// DefaultSendParameters returns a SendParameters object with default values.
 	DefaultSendParameters() SendParameters
 
-	// Preconnect creates a Preconnection, a container for sets of related
-	// remote, local, transport and security parameters (a Connection
-	// specifier), which can be instantiated into a Connection. Preconnection
+	// SetEventHandler sets the default connection handler for all
+	// Connections created within this TransportContext.
+	SetEventHandler(evh EventHandler)
+
+	// SetFramingHandler sets the default framing handler for all
+	// Connections created within this TransportContext.
+	SetFramingHandler(fh FramingHandler)
+
+	// Preconnect creates a Preconnection, which binds a connection and
+	// framing handler to sets of related remote, local, transport and
+	// security parameters (a Connection specifier) for Connection
+	// instantiation. Any of Preconnect's arguments may  be nil, in which case
+	// the default values for this TransportContext are used. Preconnection
 	// allows the specification of multiple, disjoint sets of related
 	// parameters for candidate transport protocol selection, as well as the
 	// ability to initiate and send atomically for 0-RTT connection. The
-	// Preconnection is initialized with one set of parameters; use Preconnection.
-	Preconnect(ch ConnectionHandler, rem Remote, loc Local, tp TransportParameters, sp SecurityParameters) (Preconnection, error)
+	// Preconnection is initialized with one set of parameters; use
+	// Preconnection.AddSpecifier to add more.
 
-	// Initiate a connection with a given handler, remote, local, and
-	// parameters. Any of these except Remote may be nil, in which case
-	// context defaults will be used. Once the Connection is initiated, the
-	// ConnectionHandler's Ready callback will be called with this connection
-	// and a nil antecedent. This is a shortcut for creating a Preconnection
-	// with a single connection specifier and initiating it.
-	Initiate(ch ConnectionHandler, rem Remote, loc Local, tp TransportParameters, sp SecurityParameters) (Connection, error)
+	Preconnect(evh EventHandler, fh FramingHandler, rem Remote, loc Local, tp TransportParameters, sp SecurityParameters) (Preconnection, error)
+
+	// Initiate a connection with given remote, local, and parameters, and the
+	// default connection and framing handlers. Any of these except Remote may
+	// be nil, in which case context defaults will be used. Once the
+	// Connection is initiated, the EventHandler's Ready callback will be
+	// called with this connection and a nil antecedent. This is a shortcut
+	// for creating a Preconnection with a single connection specifier and
+	// initiating it.
+	Initiate(rem Remote, loc Local, tp TransportParameters, sp SecurityParameters) (Connection, error)
 
 	// Rendezvous with a given Remote using an appropriate peer to peer
-	// rendezvous method, with a given Handler for connection events, with
+	// rendezvous method, with
 	// optional local, transport parameters, and security parameters. Each of
 	// the optional arguments may be passed as nil; if so, the Context
 	// defaults are used. Returns a Connection in the process of being
-	// rendezvoused. The ConnectionHandler's Ready callback will be called
+	// rendezvoused. The EventHandler's Ready callback will be called
 	// with any established Connection(s), with a nil antecedent.
 	// This is a shortcut for creating a Preconnection with a single
 	// connection specifier and rendezvousing with it.
-	Rendezvous(ch ConnectionHandler, rem Remote, loc Local, tp TransportParameters, sp SecurityParameters) (Connection, error)
+	Rendezvous(evh EventHandler, rem Remote, loc Local, tp TransportParameters, sp SecurityParameters) (Connection, error)
 
 	// Listen on a given Local with a given Handler for connection events,
 	// with optional transport and security parameters. Each of the optional
 	// arguments may be passed as nil; if so, the Context defaults are used.
 	// Returns a Listener in the process of being started. The
-	// ConnectionHandler's Ready callback will be called with any accepted
+	// EventHandler's Ready callback will be called with any accepted
 	// Connection(s), with this Connection as antecedent.
-	Listen(ch ConnectionHandler, loc Local, tp TransportParameters, sp SecurityParameters) (Connection, error)
+	Listen(evh EventHandler, loc Local, tp TransportParameters, sp SecurityParameters) (Connection, error)
 
 	// Save this context's state to a file on disk. The format of this state
 	// file is not specified and not necessarily portable across
@@ -95,7 +120,7 @@ type TransportContext interface {
 // set of candidate endpoints assumed to be equivalent from the application's
 // standpoint to be resolved and connected to. Resolution of the remote need
 // not occur until a connection is created; any resolution error will be
-// reported via the ConnectionHandler when Intiate, Listen, or Rendezvous is
+// reported via the EventHandler when Intiate, Listen, or Rendezvous is
 // called.
 type Remote interface {
 	// Return a remote specifier with the given hostname added to this specifier.
@@ -115,7 +140,7 @@ type Remote interface {
 // port, and/or service name. Multiple of each of these may be given; this
 // will result in a set of candidate endpoints assumed to be equivalent from
 // the application's standpoint to be connected from or listened on. Any
-// resolution error will be reported via the ConnectionHandler when Intiate,
+// resolution error will be reported via the EventHandler when Intiate,
 // Listen, or Rendezvous is called.
 type Local interface {
 	// Return a local specifier with the given local network interface name or alias added to this specifier
@@ -137,13 +162,10 @@ type Local interface {
 // ParameterIdentifier identifies a Transport or Security Parameter
 type ParameterIdentifier int
 
-// List of transport and security parameter names. FIXME reference to documentation
+// List of transport and security parameter names.
 const (
 	TransportFullyReliable = iota
-	SecuritySupportedGroup
-	SecurityCiphersuite
-	SecuritySignatureAlgorithm
-	// ... and so on
+	// ... and so on, FIXME fill this in. until then, see document for details
 )
 
 // TransportParameters contains a set of parameters used in the selection of
@@ -224,9 +246,6 @@ type SecurityParameters interface {
 // SendParameters contains a set of parameters used for sending content.
 // DefaultSendParameters() returns the defaults for this context.
 type SendParameters struct {
-	// ContentRef is an opaque object referencing a Content that will be
-	// passed on events pertaining to the Content.
-	ContentRef interface{}
 	// Lifetime after which the object is no longer relevant. Used for
 	// unreliable and partially reliable transports; set to zero or less to
 	// specify fully reliable transport, if available.
@@ -263,7 +282,7 @@ type Preconnection interface {
 	// Initiate a Connection with a Remote specified by this Preconnection,
 	// using the Local and parameters supplied. Returns a connection in the
 	// initiation process. Once the Connection is initiated, the
-	// ConnectionHandler's Ready callback will be called with this connection
+	// EventHandler's Ready callback will be called with this connection
 	// and a nil antecedent.
 	Initiate() (Connection, error)
 
@@ -271,42 +290,119 @@ type Preconnection interface {
 	// using the Local and parameters supplied, while simultaneously sending
 	// Content with the given SendParameters. Returns a connection in the
 	// initiation process. Once the Connection is initiated, the
-	// ConnectionHandler's Ready callback will be called with this connection
+	// EventHandler's Ready callback will be called with this connection
 	// and a nil antecedent.
 	InitialSend(content interface{}, sp SendParameters) (Connection, error)
 
 	// Rendezvous  using an appropriate peer to peer rendezvous method with a
 	// Remote specified by this Preconnection, using the Local and parameters
 	// supplied. Returns a connection in the rendezvous process. The
-	// ConnectionHandler's Ready callback will be called with any established
+	// EventHandler's Ready callback will be called with any established
 	// Connection(s), with a nil antecedent.
 	Rendezvous() (Connection, error)
 
 	// Listen for connections on the Local specified by this Preconnection
 	// using the Local and parameters supplied. Returns a Listener in the
-	// process of being started. The ConnectionHandler's Ready callback will
+	// process of being started. The EventHandler's Ready callback will
 	// be called with any accepted Connection(s), with this Connection as
 	// antecedent.
 	Listen() (Connection, error)
 }
 
+// Connection encapsulates a connection to another endpoint. All events on the
+// connection will be passed to its associated EventHandler.
 type Connection interface {
-	Send(c interface{}, sp SendParameters) error
+
+	// Send sends some content on this connection, with an optional content
+	// reference, an object that will be used to refer to the content on any
+	// event related to it, and a set of send parameters to govern how it will
+	// be sent. If content is a []byte, the bytes it contains will be sent to
+	// over the connection as a single Content. If content implements the
+	// Content interface, the Bytes() method will be invoked and the resulting
+	// []byte will be transmitted. Otherwise, content will be passed to the
+	// framing handler's Frame() method to convert it to a []byte for
+	// transmission.
+	Send(content interface{}, contentref interface{}, sp SendParameters) error
+
+	// Clone clones this Connection, creating a new Connection to the same
+	// remote endpoint. If the underlying protocol stack supports
+	// multistreaming, then this will create a new stream; otherwise, a new
+	// transport connection (flow) will be created.
 	Clone() (Connection, error)
+
+	// Close closes this connection.
 	Close() error
+
+	// GetEventHandler returns this connection's event handler.
+	GetEventHandler() EventHandler
+
+	// SetEventHandler replaces this connection's event handler.
+	SetEventHandler(eh EventHandler)
+
+	// GetEventHandler returns this connection's framing handler.
+	GetFramingHandler() FramingHandler
+
+	// SetEventHandler replaces this connection's framing handler.
+	SetFramingHandler(fh FramingHandler)
 }
 
+// Content provides the interface implemented by content passed to a Received
+// event.
 type Content interface {
 	Bytes() []byte
 }
 
-type ConnectionHandler struct {
-	Ready    func(conn Connection, ante Connection)
-	Received func(content Content, conn Connection)
-	Sent     func(conn Connection, contentref interface{})
-	Expired  func(conn Connection, contentref interface{})
-	Error    func(conn Connection, contentref interface{}, err error)
-	Closed   func(conn Connection)
-	Frame    func(content interface{}) ([]byte, error)
-	Deframe  func(in io.Reader) (Content, error)
+// EventHandler defines the interface for connection event handlers.
+type EventHandler interface {
+
+	// Ready occurs when a new connection is ready for use. The conn argument
+	// contains the new connection, and the ante argument contains the
+	// connection from which this connection was created. In the case of
+	// Connections opened with Initate() and Rendezvous(), ante will be nil.
+	// In the case of passively-opened Connections (i.e., created after
+	// Listen()), ante will contain the listening Connection. In the case of
+	// Connections created by Clone(), ante will contain the connection on
+	// which Clone() was called. In the case of Connections created because a
+	// remote endpoint created new streams with a multistreaming transport
+	// protocol, ante will contain a Connection wrapped around one of the
+	// other streams.
+	Ready(conn Connection, ante Connection)
+
+	// Received occurs when Content had been received. The Content received is
+	// given as an implementation of the Content interface, on which the
+	// receiver can call Bytes(). For protocol stacks
+	Received(content Content, conn Connection)
+
+	// Sent occurs when Content has been sent. The contentref argument
+	// contains the content reference given on Send().
+	Sent(conn Connection, contentref interface{})
+
+	// Expired occurs when a Content's expires without having been sent. The
+	// contentref argument contains the content reference given on Send().
+	Expired(conn Connection, contentref interface{})
+
+	// Error occurs when an error occurs on a connection. If the error refers
+	// to an attempt to send content, the contentref argument contains the
+	// content reference given on Send(). Error is only occurs for errors
+	// which do not also cause the connection to close.
+	Error(conn Connection, contentref interface{}, err error)
+
+	// Closed occurs when a connection is closed, either actively through
+	// Close(), passively because the remote side ended the connection, or
+	// because a connection-ending error occurred. In this last case, the
+	// error is passed as the err argument.
+	Closed(conn Connection, err error)
+}
+
+// FramingHandler defines the interface for application-assisted framing and deframing
+type FramingHandler interface {
+	// Frame converts a content object as passed to the Send() call into a
+	// []byte to be passed down to the protocol stack.
+	Frame(content interface{}) ([]byte, error)
+
+	// Deframe reads the next object from a given reader, and returns it as an
+	// object of a type implementing Content. Deframe will only be called when
+	// receiving content via a transport protocol which does not provide its
+	// own framing (e.g. TCP)
+	Deframe(in io.Reader) (Content, error)
 }
