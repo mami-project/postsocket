@@ -183,6 +183,7 @@ const (
 	TransportMaxNoFragment
 	TransportMaxNonpartialSend
 	TransportMaxNonpartialReceive
+	TransportNiceness
 	SecuritySupportedGroup
 	SecurityCiphersuite
 	SecuritySignatureAlgorithm
@@ -356,19 +357,26 @@ type Preconnection interface {
 	// called with this connection and a nil antecedent.
 	InitialSend(message interface{}, sp SendParameters) (Connection, error)
 
-	// Rendezvous  using an appropriate peer to peer rendezvous method with a
+	// Rendezvous using an appropriate peer to peer rendezvous method with a
 	// Remote specified by this Preconnection, using the Local and parameters
 	// supplied. Returns a connection in the rendezvous process. The
 	// EventHandler's Ready callback will be called with any established
 	// Connection(s), with a nil antecedent.
 	Rendezvous() (Connection, error)
 
-	// Listen for connections on the Local specified by this Preconnection
-	// using the Local and parameters supplied. Returns a Listener in the
-	// process of being started. The EventHandler's Ready callback will
-	// be called with any accepted Connection(s), with this Connection as
-	// antecedent.
+	// Listen for connections on the Local specified by this Preconnection using
+	// the Local and parameters supplied. Returns a Listener in the process of
+	// being started. The EventHandler's Ready callback will be called with any
+	// accepted Connection(s), with this Connection as antecedent.
+	//
+	// Note: this is not currently in line with the API in the document, which
+	// causes the preconnection to be the listener, not a connection, but this
+	// would need a separate way to close a listening preconnection. Discuss for
+	// -01.
 	Listen() (Connection, error)
+
+	// Clone this preconnection
+	Clone() (Preconnection, error)
 }
 
 // Connection encapsulates a connection to another endpoint. All events on the
